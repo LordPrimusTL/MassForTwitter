@@ -3,6 +3,7 @@ package com.mavericks.massfortwitter;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.annotation.TargetApi;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.support.annotation.NonNull;
 import android.support.design.widget.Snackbar;
@@ -19,6 +20,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.ContactsContract;
 import android.text.TextUtils;
+import android.util.Base64;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.View.OnClickListener;
@@ -29,8 +32,73 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 
+import com.android.volley.AuthFailureError;
+import com.android.volley.Response;
+import com.android.volley.VolleyError;
+import com.android.volley.VolleyLog;
+import com.android.volley.toolbox.JsonObjectRequest;
+import com.android.volley.toolbox.Volley;
+import com.androidnetworking.AndroidNetworking;
+import com.androidnetworking.common.Method;
+import com.androidnetworking.common.Priority;
+import com.androidnetworking.error.ANError;
+import com.androidnetworking.interfaces.JSONArrayRequestListener;
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.mavericks.massfortwitter.Models.Followers;
+import com.mavericks.massfortwitter.Utility.AppPreference;
+import com.mavericks.massfortwitter.Utility.HMAC;
+import com.mavericks.massfortwitter.Utility.HmacShaEncrypt;
+import com.mavericks.massfortwitter.http.Api;
+import com.mavericks.massfortwitter.http.ApiClient;
+import com.mavericks.massfortwitter.http.RetrofitClient;
+import com.twitter.sdk.android.core.Callback;
+import com.twitter.sdk.android.core.DefaultLogger;
+import com.twitter.sdk.android.core.Result;
+import com.twitter.sdk.android.core.Twitter;
+import com.twitter.sdk.android.core.TwitterApiClient;
+import com.twitter.sdk.android.core.TwitterAuthConfig;
+import com.twitter.sdk.android.core.TwitterAuthToken;
+import com.twitter.sdk.android.core.TwitterConfig;
+import com.twitter.sdk.android.core.TwitterCore;
+import com.twitter.sdk.android.core.TwitterException;
+import com.twitter.sdk.android.core.TwitterSession;
+import com.twitter.sdk.android.core.identity.TwitterLoginButton;
+import com.twitter.sdk.android.core.models.User;
+import com.twitter.sdk.android.core.services.StatusesService;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.UnsupportedEncodingException;
+import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
+import java.security.SignatureException;
+import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import javax.crypto.KeyGenerator;
+import javax.crypto.Mac;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+
+import butterknife.BindView;
+import butterknife.ButterKnife;
+import okhttp3.ResponseBody;
+import retrofit2.Retrofit;
+import rx.Observable;
+import rx.Scheduler;
+import rx.Subscriber;
+import rx.android.schedulers.AndroidSchedulers;
+import rx.schedulers.Schedulers;
 
 import static android.Manifest.permission.READ_CONTACTS;
 
@@ -44,6 +112,7 @@ public class LoginActivity extends AppCompatActivity implements LoaderCallbacks<
      */
     private static final int REQUEST_READ_CONTACTS = 0;
 
+
     /**
      * A dummy authentication store containing known user names and passwords.
      * TODO: remove after connecting to a real authentication system.
@@ -56,16 +125,43 @@ public class LoginActivity extends AppCompatActivity implements LoaderCallbacks<
      */
     private UserLoginTask mAuthTask = null;
 
+    String nonce;
+    long timestamp;
     // UI references.
     private AutoCompleteTextView mEmailView;
     private EditText mPasswordView;
     private View mProgressView;
     private View mLoginFormView;
+    @BindView(R.id.email_sign_in_button)Button mEmailSignInButton;
+    @BindView(R.id.login_button)TwitterLoginButton loginButton;
+    String TAG = "LoginActivity";
+    AppPreference appPreference;
+    ApiClient apiClient;
+    TwitterSession session;
+    RetrofitClient retrofit;
+    String consumerKey = "KarGWMrkBvCfpWFGCS1AiwhLA";
+    String consumerSecret = "DFcne3mjw1p0ZB0BRy5ZD57m5W7LOGSF0rXmtZBb4YXMXXYYlB";
+    String signature;
+    String access_token = "1687782750-OpajtQ94dojTlRjTt5Zgf3AjkpK4ERptkr3lhjM";
+    String access_token_secret = "oi06pgv55nThBRnkNgFj0vka1lQWiv2LesfAliGHUwC6h";
+    String BASE_URL = "https://api.twitter.com/1.1/";
+    String HTTP_METHOD = "GET";
+    String oauth_signature_method = "HMAC-SHA1";
+    String auth;
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_login);
+        ButterKnife.bind(this);
+        appPreference = new AppPreference(this);
+        TwitterConfig config = new TwitterConfig.Builder(this)
+                .logger(new DefaultLogger(Log.DEBUG))
+                .twitterAuthConfig(new TwitterAuthConfig("CONSUMER_KEY", "CONSUMER_SECRET"))
+                .debug(true)
+                .build();
+        Twitter.initialize(config);
         // Set up the login form.
         mEmailView = (AutoCompleteTextView) findViewById(R.id.email);
         populateAutoComplete();
@@ -82,18 +178,92 @@ public class LoginActivity extends AppCompatActivity implements LoaderCallbacks<
             }
         });
 
-        Button mEmailSignInButton = (Button) findViewById(R.id.email_sign_in_button);
+        // mEmailSignInButton = (Button) findViewById(R.id.email_sign_in_button);
         mEmailSignInButton.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View view) {
-                attemptLogin();
+                getTwitterFriend();
             }
         });
 
+        if(appPreference.getSignIn()){
+            //loginButton.setVisibility(View.INVISIBLE);
+            getData();
+        }else{
+        }
+
         mLoginFormView = findViewById(R.id.login_form);
         mProgressView = findViewById(R.id.login_progress);
+
+        loginButton.setCallback(new Callback<TwitterSession>() {
+            @Override
+            public void success(Result<TwitterSession> result) {
+                Log.e(TAG, "success: " + result.data);
+                appPreference.setSignIn(true);
+            }
+
+            @Override
+            public void failure(TwitterException exception) {
+                Log.e(TAG, "failure: " + exception);
+            }
+        });
+
     }
 
+    private void getData(){
+        session = TwitterCore.getInstance().getSessionManager().getActiveSession();
+        TwitterAuthToken authToken = session.getAuthToken();
+        String token = authToken.token;
+        String secret = authToken.secret;
+        Log.e(TAG, "getData: " + token + " " + secret);
+        getTwitterFriend();
+    }
+
+
+
+    private void getFriends(){
+        apiClient = new ApiClient(session);
+//        apiClient.getAddedService().getFriends().subscribeOn(Schedulers.newThread()).observeOn(AndroidSchedulers.mainThread())
+//        .subscribe(new Subscriber<List<User>>() {
+//            @Override
+//            public void onCompleted() {
+//
+//            }
+//
+//            @Override
+//            public void onError(Throwable e) {
+//                Log.e(TAG, "onError: " + e);
+//            }
+//
+//            @Override
+//            public void onNext(List<User> users) {
+//                Log.e(TAG, "onNext: User" + users);
+//            }
+//        });
+    }
+
+    private void getRetroFriends(){
+//        retrofit = new RetrofitClient(this, session);
+//        retrofit.getApiService().getFriends().subscribeOn(Schedulers.newThread())
+//                .observeOn(AndroidSchedulers.mainThread())
+//                .subscribe(new Subscriber<List<User>>() {
+//                    @Override
+//                    public void onCompleted() {
+//
+//                    }
+//
+//                    @Override
+//                    public void onError(Throwable e) {
+//                        Log.e(TAG, "onError: " + e);
+//
+//                    }
+//
+//                    @Override
+//                    public void onNext(List<User> users) {
+//                        Log.e(TAG, "onNext: " + users);
+//                    }
+//                });
+    }
     private void populateAutoComplete() {
         if (!mayRequestContacts()) {
             return;
@@ -345,6 +515,233 @@ public class LoginActivity extends AppCompatActivity implements LoaderCallbacks<
             mAuthTask = null;
             showProgress(false);
         }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        loginButton.onActivityResult(requestCode, resultCode, data);
+    }
+
+
+    public void calculateAuthorization(){
+        //Timespamp
+        timestamp = System.currentTimeMillis() / 1000L;
+        nonce = UUID.randomUUID().toString();
+        nonce = nonce.replace("-","");
+        try {
+            nonce = URLEncoder.encode(Base64.encodeToString(nonce.getBytes(), Base64.NO_WRAP), "utf-8");
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        }
+        String parameterString = "oauth_consumer_key=\""+consumerKey.trim() +"\"&oauth_nonce=\"" + nonce.trim()+ "\"&oauth_signature_method=HMAC-SHA1&oauth_timestamp=\"" + timestamp + "\"&oauth_token=\"" + access_token.trim() + "\"&oauth_version=1.0";
+        //String parameterString = "POST&https%3A%2F%2Fapi.twitter.com%2F1.1%2Fstatuses%2Fupdate.json&include_entities%3Dtrue%26oauth_consumer_key%3Dxvz1evFS4wEEPTGEFPHBog%26oauth_nonce%3DkYjzVBB8Y0ZFabxSWbWovY3uYSQ2pTgmZeNu2VS4cg%26oauth_signature_method%3DHMAC-SHA1%26oauth_timestamp%3D1318622958%26oauth_token%3D370773112-GmHxMAgYyLbNEtIKZeRNFsMKPR9EyMZeS9weJAEb%26oauth_version%3D1.0%26status%3DHello%2520Ladies%2520%252B%2520Gentlemen%252C%2520a%2520signed%2520OAuth%2520request%2521";
+        String encoded = null;
+        HTTP_METHOD = HTTP_METHOD.toUpperCase();
+
+        try {
+            encoded = URLEncoder.encode(BASE_URL + "followers/ids.json","UTF-8");
+            //encoded = URLEncoder.encode(BASE_URL + "followers/ids.json","UTF-8");
+            signature = HTTP_METHOD + "&"+ encoded +"&" + URLEncoder.encode(parameterString, "UTF-8");
+            Log.e(TAG, "calculateAuthorization: "+signature);
+            Log.e(TAG, "calculateAuthorization: SignEnco" + signature);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        String signKey = null;
+        try {
+            signKey= URLEncoder.encode(consumerSecret, "utf-8") + "&" + URLEncoder.encode(access_token_secret,"utf-8");
+            Log.e(TAG, "calculateAuthorization: signinkey"+signKey );
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        }
+
+        String data = null;
+        try {
+            //signature = URLEncoder.encode(HmacShaEncrypt.calculateRFC2104HMAC(signature,signKey), "utf-8");
+            signature = URLEncoder.encode(hmac_sha1(signature,signKey), "utf-8");
+            //signature = "1ed4e409117d19ff84de5de98b445dc57432f861";
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        //generate Auth
+        //auth = "OAuth oauth_consumer_key=\""+consumerKey.trim()+"\",oauth_token=\"" + access_token.trim() + "\",oauth_signature_method=\"HMAC-SHA1\",oauth_timestamp=\""+timestamp+"\",oauth_nonce=\"" + nonce.trim() + "\",oauth_version=\"1.0\",oauth_signature=\"" + signature.trim() + "\"";
+        auth = "OAuth oauth_consumer_key=\"KarGWMrkBvCfpWFGCS1AiwhLA\",oauth_token=\"1687782750-OpajtQ94dojTlRjTt5Zgf3AjkpK4ERptkr3lhjM\",oauth_signature_method=\"HMAC-SHA1\",oauth_timestamp=\"1514344277\",oauth_nonce=\"NzAwODI4MDBkMDM0NDRhNzg0NTdjMzc2NGY4MGE3OWE%3D\",oauth_version=\"1.0\",oauth_signature=\"yQOQ6IzAifVDZh0ZfECC0aoNgDA%3D\"";
+        Log.e(TAG, "calculateAuthorization: " + timestamp);
+        Log.e(TAG, "calculateAuthorization: Cons" + consumerKey);
+        Log.e(TAG, "calculateAuthorization: nonce" + nonce);
+        Log.e(TAG, "calculateAuthorization: Sign" + signature);
+        Log.e(TAG, "calculateAuthorization: Enco" + encoded );
+        Log.e(TAG, "calculateAuthorization: sign" + signKey);
+        Log.e(TAG, "calculateAuthorization: Encry" + signature);
+        Log.e(TAG, "calculateAuthorization: Auth " + auth);
+        //OAuth oauth_consumer_key="KarGWMrkBvCfpWFGCS1AiwhLA",oauth_token="1687782750-OpajtQ94dojTlRjTt5Zgf3AjkpK4ERptkr3lhjM",oauth_signature_method="HMAC-SHA1",oauth_timestamp="1514158719",oauth_nonce="NzAwODI4MDBkMDM0NDRhNzg0NTdjMzc2NGY4MGE3OWE%3D",oauth_version="1.0",oauth_signature="4%2FxqBwj7tob3ihwK7kP8lC68P1A%3D"
+
+    }
+
+
+    private void getTwitterFriend(){
+
+        calculateAuthorization();
+//        try{
+//            apiClient = new ApiClient(session);
+//            apiClient.getAddedService().getFriends(auth).subscribeOn(Schedulers.newThread()).observeOn(AndroidSchedulers.mainThread()).subscribe(new Subscriber<String>() {
+//                @Override
+//                public void onCompleted() {
+//
+//                }
+//
+//                @Override
+//                public void onError(Throwable e) {
+//                    if(e instanceof TwitterException){
+//                        Log.e(TAG, "onError: " + e);
+//                    }else{
+//                        Log.e(TAG, "onErrr: " + e);
+//                    }
+//                }
+//
+//                @Override
+//                public void onNext(String s) {
+//                    Log.e(TAG, "onNext: " + s);
+//                }
+//            });
+//        }catch (Exception ex)
+//        {
+//            Log.e(TAG, "getTwitterFriend: " + ex);
+//        }
+
+//        retrofit = new RetrofitClient(this,RetrofitClient.DEFAULT_HOST);
+//        retrofit.getApiService().getFriends(auth).subscribeOn(Schedulers.newThread())
+//                .observeOn(AndroidSchedulers.mainThread()).subscribe(new Subscriber<Result>() {
+//            @Override
+//            public void onCompleted() {
+//                Log.e(TAG, "onCompleted: ");
+//            }
+//
+//            @Override
+//            public void onError(Throwable e) {
+//                Log.e(TAG, "onError: +"+ e );
+//                Log.e(TAG, "onError: +"+ e.getMessage() );
+//                Log.e(TAG, "onError: +"+ e.getSuppressed() );
+//                e.printStackTrace();
+//            }
+//
+//            @Override
+//            public void onNext(Result responseBody) {
+//                Log.e(TAG, "onNext: +"+ responseBody.response);
+//                Log.e(TAG, "onNext: +"+ new Gson().toJson(responseBody));
+//                Log.e(TAG, "onNext: +"+ responseBody.data);
+//                Log.e(TAG, "onNext: +"+ responseBody);
+//            }
+//        });
+
+
+       try{
+           retrofit = new RetrofitClient(this,RetrofitClient.DEFAULT_HOST);
+           retrofit.getApiService().getFriends(auth).enqueue(new Callback<Result>() {
+               @Override
+               public void success(Result<Result> result) {
+                   Log.e(TAG, "success: "+new Gson().toJson(result));
+                   Log.e(TAG, "success: "+new Gson().toJson(result.response.headers()));
+                   Log.e(TAG, "success: "+new Gson().toJson(result.response.raw()));
+               }
+
+               @Override
+               public void failure(TwitterException exception) {
+                   exception.printStackTrace();
+                   Log.e(TAG, "failure: " + exception);
+               }
+           });
+
+       }catch (Exception ex){
+           Log.e(TAG, "getTwitterFriend: vretrofit" + ex);
+       }
+
+       try{
+           AndroidNetworking.get("https://api.twitter.com/1.1/followers/list.json")
+                   .addPathParameter("pageNumber", "0")
+                   .addQueryParameter("limit", "3")
+                   .setPriority(Priority.HIGH)
+                   .addHeaders("Authorization", auth)
+                   .build()
+                   .getAsJSONArray(new JSONArrayRequestListener() {
+                       @Override
+                       public void onResponse(JSONArray response) {
+                           Log.e(TAG, "onResponse: " + response);
+                       }
+                       @Override
+                       public void onError(ANError error) {
+                           // handle error
+                           Log.e(TAG, "onError: " + error.getErrorBody());
+                           Log.e(TAG, "onError: " + error.getErrorDetail());
+                           Log.e(TAG, "onError: " + error.getErrorCode());
+                       }
+                   });
+
+
+       }catch (Exception ex){
+           Log.e(TAG, "getTwitterFriend: FAN" + ex);
+       }
+
+
+       try{
+           String url = "https://api.twitter.com/1.1/followers/list.json";
+           JsonObjectRequest jsonObjReq = new JsonObjectRequest(Method.GET,
+                   url, null,
+                   new Response.Listener<JSONObject>() {
+
+                       @Override
+                       public void onResponse(JSONObject response) {
+                           Log.d(TAG, response.toString());
+                       }
+                   }, new Response.ErrorListener() {
+               @Override
+               public void onErrorResponse(VolleyError error) {
+                   Log.e(TAG, "onErrorResponse: " + error.getMessage());
+               }
+
+           }){
+               @Override
+               public Map<String, String> getHeaders() throws AuthFailureError {
+                   HashMap<String, String> headers = new HashMap<>();
+                   headers.put("Content-Type", "application/json");
+                   headers.put("Authorization", auth);
+                   return headers;
+               }
+           };
+
+           Volley.newRequestQueue(this).add(jsonObjReq);
+       }catch (Exception ex){
+           Log.e(TAG, "getTwitterFriend: volley" + ex);
+       }
+
+
+    }
+
+    private String hmac_sha1(String Base, String Key){
+
+        Mac mac;
+        try {
+            mac = Mac.getInstance("HmacSHA1");
+            SecretKeySpec secret = new SecretKeySpec(Key.getBytes("UTF-8"), "HmacSHA1");
+            mac.init(secret);
+            byte[] digest = mac.doFinal(Base.getBytes("UTF-8"));
+
+            //Log.i("hex",bytesToHex(digest));
+
+            return Base64.encodeToString(digest, Base64.NO_WRAP);
+
+            //return new String(Base64.encode(digest,Base64.NO_WRAP));
+
+        } catch (Exception e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+        }
+
+
+        return "";
     }
 }
 

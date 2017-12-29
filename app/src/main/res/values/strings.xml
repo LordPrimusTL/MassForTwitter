@@ -12,5 +12,6 @@
     <string name="error_field_required">This field is required</string>
     <string name="permission_rationale">"Contacts permissions are needed for providing email
         completions."
-    </string>
+    </string><string name="com.twitter.sdk.android.CONSUMER_KEY">KarGWMrkBvCfpWFGCS1AiwhLA</string>
+    <string name="com.twitter.sdk.android.CONSUMER_SECRET">DFcne3mjw1p0ZB0BRy5ZD57m5W7LOGSF0rXmtZBb4YXMXXYYlB</string>
 </resources>
